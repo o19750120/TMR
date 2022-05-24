@@ -1,0 +1,109 @@
+#pip install plotly
+#pip install folium
+
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.figure_factory as ff
+from plotly.subplots import make_subplots
+
+import folium
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+%matplotlib inline
+
+import math
+import random
+from datetime import timedelta
+
+import warnings
+warnings.filterwarnings('ignore')
+
+#繪圖顏色
+cnf = '#393e46'
+dth = '#ff2e63'
+rec = '#21bf73'
+act = '#fe9801’
+
+import plotly as py
+py.offline.init_notebook_mode(connected=True)
+
+import os
+try:
+    os.system("rm -rf Covid-19-Preprocessed-Dataset")
+except:
+    print("檔案不存在")
+
+#!git clone https://github.com/laxmimerit/Covid-19-Preprocessed-Dataset.git
+
+#用parse_dates=["Date"]來讀取日期
+df=pd.read_csv("Covid-19-Preprocessed-Dataset/preprocessed/covid_19_data_cleaned.csv",parse_dates=["Date"])
+
+country_daywise=pd.read_csv("Covid-19-Preprocessed-Dataset/preprocessed/country_daywise.csv",parse_dates=["Date"])
+countrywise=pd.read_csv("Covid-19-Preprocessed-Dataset/preprocessed/countrywise.csv")
+daywise=pd.read_csv("Covid-19-Preprocessed-Dataset/preprocessed/daywise.csv",parse_dates=["Date"])
+
+#把NaN清掉
+df["Province/State"]=df["Province/State"].fillna("")
+df.head()
+
+Confirmed = df.groupby('Date').sum()['Confirmed'].reset_index()
+Recovered = df.groupby('Date').sum()['Recovered'].reset_index()
+Deaths = df.groupby('Date').sum()['Deaths'].reset_index()
+
+df.isnull().sum()
+df.info()
+
+df.query('Country == "Taiwan*“’)
+
+fig=go.Figure()
+fig.add_trace(go.Scatter(x=Confirmed["Date"],y=Confirmed["Confirmed"],mode="lines+markers",name="Confirmed",line=dict(color="orange")))
+fig.add_trace(go.Scatter(x=Recovered["Date"],y=Recovered["Recovered"],mode="lines+markers",name="Recovered",line=dict(color="green")))
+fig.add_trace(go.Scatter(x=Deaths["Date"],y=Deaths["Deaths"],mode="lines+markers",name="Deaths",line=dict(color="red")))
+fig.update_layout(title="Worldwide Covid19 Cases",xaxis_tickfont_size=14,yaxis=dict(title="Number of Cases"))
+
+
+fig.show()
+
+df["Date"]=df["Date"].astype(str)
+df.info()
+
+df.head()
+
+fig=px.density_mapbox(df,lat="Lat",lon="Long",hover_name="Country",hover_data=["Confirmed","Recovered","Deaths"],animation_frame="Date",color_continuous_scale="Portland",radius=7,zoom=0,height=700)
+fig.update_layout(title="Worldwide Covid-19 with Time Lapse")
+fig.update_layout(mapbox_style="open-street-map",mapbox_center_lon=0)
+
+fig.show()
+
+df["Date"]=pd.to_datetime(df["Date"])
+df.info()
+
+#受影響的船隻
+ship_row=df["Province/State"].str.contains("Grand Princess")|df["Country"].str.contains("Grand Princess")|df["Province/State"].str.contains("Diamond Princess")|df["Country"].str.contains("Diamond Princess")|df["Country"].str.contains("MS Zaandam")
+ship=df[ship_row]
+
+df=df[~ship_row] #~反向查詢(單掉~後面的)
+
+#最新情況&標重點
+ship_latest=ship[ship["Date"]==max(ship["Date"])]
+ship_latest.style.background_gradient(cmap="Pastel1_r")
+
+temp=df.groupby('Date')['Confirmed', 'Deaths', 'Recovered', 'Active'].sum().reset_index()
+temp = temp[temp['Date']==max(temp['Date'])].reset_index(drop=True)
+Temp
+
+tm=temp.melt(id_vars = 'Date', value_vars = ['Active', 'Deaths', 'Recovered'])
+fig = px.treemap(tm,path=['variable'],values='value',height=250,width=800,color_discrete_sequence=[act,rec,dth])
+fig.data[0].textinfo = 'label+text+value'
+fig.show()
+
+temp=df.groupby('Date')['Confirmed', 'Deaths', 'Recovered', 'Active'].sum().reset_index()
+temp=temp.melt(id_vars = 'Date', value_vars = ['Recovered', 'Deaths', 'Active'],var_name="Case",value_name="Count")
+Temp
+
+fig=px.area(temp,x="Date",y="Count",color="Case",height=600,title="Cases over time",color_discrete_sequence=[act,rec,dth])
+fig.update_layout(xaxis_rangeslider_visible=True)
+fig.show()
