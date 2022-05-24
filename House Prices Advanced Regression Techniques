@@ -1,0 +1,276 @@
+install.packages("ggplot2")
+install.packages("ggthemes")
+install.packages("VIM")
+install.packages("e1071")
+install.packages("caret")
+install.packages("dplyr")
+install.packages("corrplot")
+install.packages("scales")
+install.packages("magrittr")
+
+install.packages("devtools")
+library(devtools)
+install_github("kassambara/easyGgplot2")
+library(easyGgplot2)
+library(magrittr)
+
+library(ggplot2)
+library(ggthemes)
+#library(easyGgplot2)
+library(VIM)
+library(e1071)
+library(caret)
+library(dplyr)
+library(corrplot)
+library(scales)
+
+#讀取數據
+setwd("House Prices Advanced Regression Techniques")
+train<-read.csv("train.csv",stringsAsFactors = F)
+test<-read.csv("test.csv",stringsAsFactors = F)
+
+#瀏覽自變量的組成
+str(train)
+str(test)
+
+#合併訓練和測試集，拆分與特徵工程無關的
+train_saleprice<-train$SalePrice
+train$SalePrice<-NULL
+testid<-test$Id
+all<-rbind(train,test)
+all$Id<-NULL
+
+#處理自變量名稱讀取錯誤
+names(all)[names(all) %in% c("X1stFlrSF","X2ndFlrSF","X3SsnPorch")]<-c("1stFlrSF","2ndFlrSF","3SsnPorch")
+names(all) <- tolower(names(all))
+
+#變量類型總數
+length(select_if(all,is.numeric))
+length(select_if(all,is.character))
+#總共79個變量，36個數值型變量、43個字符型變量
+
+#缺失值的分布情况
+aggr(all,combined=T)
+
+#由於變量較多，很難從圖上清楚對應到哪些變量有缺失
+missing_value<-function(df){
+  len<-length(df[,1])
+  m<-data.frame(
+    class=sapply(df,class),
+    na=colSums(is.na(df)),
+    blank=colSums(df=="",na.rm=T),
+    zero=colSums(df==0,na.rm=T)
+  )
+  m$na_prop<-paste(round(m$na/len*100,2),"%")
+  m$blank_prop<-paste(round(m$blank/len*100,2),"%")
+  m$zero_prop<-paste(round(m$zero/len*100,2),"%")
+  m2<-subset(m,rowSums(m[,2:4])!= 0)
+  m2<-m2[order(-m2$na,-m2$blank,-m2$zero),]
+  return(m2)
+}
+(missing<-missing_value(all))
+
+#從上圖發現兩個問題：
+
+#1）同區域指標的缺失情況基本一致，比如garage開頭和bsmt開頭的變量。判斷缺失原因大概率是對象不存在。
+
+#2）poolqc、fireplacequ的缺失情況和poolarea、fireplaces的0值數量基本一致。判斷在數據獲取時，如果對象不存在，則類型、質量/等級指標留空，數量/面積指標填0。
+
+#3）撇去上述兩種情況，完全隨機的缺失值應該很少，可直接用眾數、均值填補。
+
+#1) alley
+all$alley[is.na(all$alley)]<-"None"
+#2) fence
+all$fence[is.na(all$fence)]<-"None"
+#3) fireplacequ 和 fireplaces
+table(all$fireplaces[is.na(all$fireplacequ)])  
+##    0 
+## 1420 
+#fireplacequ的缺失情況和fireplaces=0的房屋一致
+all$fireplacequ[is.na(all$fireplacequ)]<-"None"
+#4) miscfeature 和 miscval
+table(all$miscval[is.na(all$miscfeature)])
+##    0 17000 
+## 2813     1 
+#有2813個房屋的miscfeature的缺失情況和miscval=0相對應
+all$miscfeature[all$miscval==0 & is.na(all$miscfeature)]<-"None"
+#單獨余留缺失值情況並進行填補
+all[all$miscval==17000 & is.na(all$miscfeature),]
+table(all$miscval,all$miscfeature)
+all$miscfeature[2550]<-"Gar2"
+#5) poolarea 和 poolqc
+table(all$poolarea[is.na(all$poolqc)])
+##    0  368  444  561 
+## 2906    1    1    1 
+all$poolqc[all$poolarea==0 & is.na(all$poolqc)]<-"None"
+all[is.na(all$poolqc),]  #確認餘留缺失值所在行號：2421、2504、2600
+#有泳池的房屋數量較少，通過房屋的建成時間、是否改建、整體質量，以及其他區域的質量等判斷
+all$poolqc[2421]<-"Fa"
+all$poolqc[2504]<-"Gd"
+all$poolqc[2600]<-"Fa"
+#lotfrontage
+plot1<-ggplot(all,aes(mszoning,lotfrontage,fill=mszoning))+geom_boxplot()+theme_few()+ guides(fill=FALSE)
+plot2<-ggplot(all,aes(neighborhood,lotfrontage,fill=neighborhood))+geom_boxplot()+theme_few()+ guides(fill=FALSE)
+ggplot2.multiplot(plot1,plot2,cols=1) 
+#圖見下面，對於不同的mszoning，lotfrontage的分布範圍更窄，所以用mszong的中位數來填補
+all$mszoning[is.na(all$mszoning)]<-"RL"  #用眾數填補mszong變量
+#填補lotfrontage變量
+for (i in 1:2919){
+  if (is.na(all$lotfrontage[i])){
+    all$lotfrontage[i]<-as.integer(median(all$lotfrontage[all$mszoning==all$mszoning[i]],na.rm=T))
+  }
+}
+
+#篩選出地下室相關變量，且bsmtfintype1缺失的79行數據
+filter(select(all, contains("bsmt")),is.na(bsmtfintype1)) #
+#填補缺失值：數值型填補為0，字符型填補為"None"
+name<-c("bsmtqual","bsmtcond","bsmtexposure","bsmtfinsf1","bsmtfintype2","bsmtfinsf2","bsmtunfsf","totalbsmtsf","bsmtfullbath","bsmthalfbath","bsmtfintype1")
+for (i in name) {
+  if (is.character(all[,i])){all[,i][is.na(all$bsmtfintype1)]<-"None"}
+  else if (is.integer(all[,i])){all[,i][is.na(all$bsmtfintype1)]<-0}
+}
+#查看一下剩餘缺失值的情況
+filter(select(all,contains("bsmt")),is.na(bsmtcond))
+filter(select(all,contains("bsmt")),is.na(bsmtexposure))
+filter(select(all,contains("bsmt")),is.na(bsmtfintype2))
+filter(select(all,contains("bsmt")),is.na(bsmtqual))
+#發現余下的缺失值分布在不同的行裡，用眾數進行填補
+name<-c("bsmtcond","bsmtexposure","bsmtfintype2","bsmtqual")
+for (i in name){
+  all[,i][is.na(all[,i])]<-names(which.max(table(all[,i])))
+}
+
+#篩選garage相關變量，且garagetype缺失的157行數據，發現缺失位置完全一致
+filter(select(all,contains("garage")),is.na(garagetype)) 
+name<-c("garagecond","garagefinish","garagequal","garageyrblt","garagetype")
+for (i in name) {
+  if (is.character(all[,i])){all[,i][is.na(all$garagetype)]<-"None"}
+  else if (is.integer(all[,i])){all[,i][is.na(all$garagetype)]<-0}
+}
+#查看剩余缺失值情況
+filter(select(all,contains("garage")),is.na(garagecond)) 
+which(is.na(all$garagecond)) #查看缺失值所在行數：2127 2577
+#有車庫面積的按眾數填補
+name<-c("garagecond","garagefinish","garagequal")
+for (i in name) {all[2127,i]<-names(which.max(table(all[,i])))}
+#車庫的建造年份的眾數是0（即157個沒有車庫項）
+table(all$garageyrblt) %>% sort(decreasing=T) %>% data.frame %>% head
+sum(all$yearbuilt==all$garageyrblt,na.rm=T)  #車庫和房屋的建造年份基本一致
+all[2127,"garageyrblt"]<-all[2127,"yearbuilt"]
+
+#沒有車庫面積的按沒有車庫填補
+name<-c("garagecond","garagefinish","garagequal","garagetype")
+for (i in name) {all[2577,i]<-"None"}
+name<-c("garageyrblt","garagecars","garagearea")
+for (i in name) {all[2577,i]<-0}
+
+#masvnrarea 和 masvnrtype
+table(all$masvnrtype[all$masvnrarea==0])
+## BrkFace    None   Stone 
+##       2    1735       1 
+#masvnrarea=0，而masvnrtype不為“None”按對象不存在填補
+
+#篩選砌體相關變量，且masvnrtype缺失的24行數據，進行填補 
+filter(select(all,contains("masvnr")),is.na(masvnrtype)) 
+all$masvnrtype[all$masvnrarea==0]<-"None"
+all$masvnrtype[is.na(all$masvnrarea)]<-"None"
+all$masvnrarea[is.na(all$masvnrarea)]<-0
+all[which(is.na(all$masvnrtype)),"masvnrtype"]<-"BrkFace" 
+
+name<-c("kitchenqual","exterior1st","exterior2nd","functional","utilities","electrical","saletype")
+for (i in name){all[,i][is.na(all[,i])]<-names(which.max(table(all[,i])))}
+
+class(all$mssubclass)
+## [1] "integer"
+level<-c("20"="1s>1946","30"="1s<1945","40"="1s_unf","45"="1.5s_unf","50"="1.5s_fin",
+          "60"="2s>1946","70"="2s<1945","75"="2.5s","80"="split/multilevel","85"="split foyer",
+          "90"="duplex","120"="1s_pud>1946","150"="1.5s_pud","160"="2s_pud>1946","180"="pud_mul",
+          "190"="2family coversion")
+all$mssubclass<-level[as.character(all$mssubclass)]
+all$mssubclass<-factor(all$mssubclass)
+
+#轉換函數
+aslevel<-function(x,levels) {as.integer(levels[x])}
+
+#lotshape
+all$lotshape<-aslevel(all$lotshape,levels=c("IR3"=0,"IR2"=1,"IR1"=2,"Reg"=3))
+
+#landcontour
+all$landcontour<-aslevel(all$landcontour,levels=c("Low"=0,"HLS"=1,"Bnk"=2,"Lvl"=3))
+
+#utilities
+all$utilities<-aslevel(all$utilities,levels=c("ELO"=0,"NoSeWa"=1,"NoSewr"=2,"AllPub"=3))
+
+#landslope
+all$landslope<-aslevel(all$landslope,levels=c("Sev"=0,"Mod"=1,"Gtl"=2))
+
+#exterqual, extercond, bsmtqual, bsmtcond, heatingqc,kitchenqual,fireplacequ, garagequal, garagecond,poolqc
+name<-c("exterqual","extercond","bsmtqual","bsmtcond","heatingqc","kitchenqual","fireplacequ","garagequal","garagecond","poolqc")
+levels<-c("None"=0,"Po"=1,"Fa"=2,"TA"=3,"Gd"=4,"Ex"=5)
+for (i in name){all[,i]<-aslevel(all[,i],levels=levels)}
+
+#bsmtexposure
+all$bsmtexposure<-aslevel(all$bsmtexposure,levels=c("None"=0,"No"=1,"Mn"=2,"Av"=3,"Gd"=4))
+
+#bsmtfintype1, bsmtfintype2
+all$bsmtfintype1<-aslevel(all$bsmtfintype1,levels=c("None"=0,"Unf"=1,"LwQ"=2,"Rec"=3,"BLQ"=4,"ALQ"=5,"GLQ"=6))
+all$bsmtfintype2<-aslevel(all$bsmtfintype2,levels=c("None"=0,"Unf"=1,"LwQ"=2,"Rec"=3,"BLQ"=4,"ALQ"=5,"GLQ"=6))
+
+#centralair
+all$centralair<-aslevel(all$centralair,levels=c("N"=0,"Y"=1))
+
+#functional
+all$functional<-aslevel(all$functional,levels=c("Sal"=0,"Sev"=1,"Maj2"=2,"Maj1"=3,"Mod"=4,"Min2"=5,"Min1"=6,"Typ"=7))
+
+#garagefinish
+all$garagefinish<-aslevel(all$garagefinish,levels=c("None"=0,"Unf"=1,"RFn"=2,"Fin"=3))
+
+#paveddrive
+all$paveddrive<-aslevel(all$paveddrive,levels=c("N"=0,"P"=1,"Y"=2))
+
+#fence
+all$fence<-aslevel(all$fence,levels=c("None"=0,"MnWw"=1,"GdWo"=2,"MnPrv"=3,"GdPrv"=4))
+
+name<-c("lotshape","landcontour","utilities","landslope","exterqual","extercond","bsmtqual","bsmtcond","heatingqc","kitchenqual",
+        "fireplacequ","garagequal","garagecond","poolqc","bsmtexposure","bsmtfintype1","bsmtfintype2","centralair","functional",
+        "garagefinish","paveddrive","fence")
+for(i in name){
+  p<-ggplot(all,aes(factor(get(i)),..count..,fill=I("darkred")))+geom_bar()+ggtitle(i)
+  print(p)
+  Sys.sleep(2.5)
+} 
+
+table(all$utilities)
+## AllPub NoSeWa 
+##   2918      1 
+which(all$utilities=="NoSeWa")
+all$utilities<-NULL
+
+name<-c("mszoning","street","alley","lotconfig","neighborhood","condition1","condition2","bldgtype",
+        "housestyle","roofstyle","roofmatl","exterior1st","exterior2nd","masvnrtype","foundation",
+        "heating","electrical","garagetype","miscfeature","saletype","salecondition")
+for (i in name) {all[,i]<-factor(all[,i])}
+#可視化各變量的因子分布情況（動畫）
+for (i in name) {
+  p=ggplot(all,aes(get(i),..count..,fill=I("darkred")))+geom_bar()+ggtitle(i)
+  print(p)
+  Sys.sleep(2.5)
+}
+
+length(select_if(all,is.numeric))
+length(select_if(all,is.factor))
+
+a<-select_if(all,is.numeric)[1:1460,] %>% cbind(saleprice=train_saleprice)
+corr<-cor(a)
+#相關度高於0.5的變量名稱
+name<-names(which(sort(abs(corr[,"saleprice"]),decreasing = T)>0.5))
+cor(a[,name]) %>% corrplot(method="square",type="lower",addCoef.col="white",number.digits=2,tl.cex=0.9,tl.col="black",tl.srt=45,cl.lim=c(0,1))
+
+library(randomForest)
+
+set.seed(1912)
+rf<-randomForest(x=all[1:1460,],y=train_saleprice,importance = T,ntree=100)
+imprf<-importance(rf)
+#篩選最重要的前20項，作圖
+var<-sort(imprf[,1],decreasing = T) %>% data.frame(varname=names(.),MSE=.) %>% head(20)
+ggplot(var,aes(reorder(varname,MSE),MSE,fill=MSE))+geom_bar(stat="identity")+coord_flip()+xlab("Variables")+theme_few()
